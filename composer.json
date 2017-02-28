@@ -18,6 +18,6 @@
         "yiisoft/yii2": "*"
     },
     "autoload": {
-        "psr-4": { "creditanalytics\\formwizard\\": "" }
+        "psr-4": { "creditanalytics\\formwizard\\": "src" }
     }
 }

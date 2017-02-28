@@ -56,5 +56,7 @@ class FormWizardEvent extends Event
 
     public $model;
 
+    public $wizardCompleted;
+
     public $html = null;
 }

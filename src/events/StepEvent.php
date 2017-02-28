@@ -16,7 +16,7 @@ use creditanalytics\formwizard\FormWizardBehavior;
  * StepEvent class.
  * Represents events raised while processing wizard steps.
  */
-class CurrentStepEvent extends FormWizardEvent
+class StepEvent extends FormWizardEvent
 {
     /**
      * @var mixed Branch directives for the step.
@@ -24,13 +24,6 @@ class CurrentStepEvent extends FormWizardEvent
      * StepEvent::handled === TRUE
      */
     public $branches;
-    /**
-     * @var integer Repetition index of the step
-     * WizardBehavior sets this value allowing the event handler to determine
-     * whether a step should be repeated
-     * @see $t
-     */
-    public $n;
     /**
      * @var integer|string The next step to be processed.
      * This is set by the event handler; it is only valid if
@@ -49,11 +42,4 @@ class CurrentStepEvent extends FormWizardEvent
      * use this feature.
      */
     public $nextStep = FormWizardBehavior::DIRECTION_FORWARD;
-    /**
-     * @var integer Total number of repetitions of the step
-     * WizardBehavior sets this value allowing the event handler to determine
-     * whether a step should be repeated
-     * @see $n
-     */
-    public $t;
 }

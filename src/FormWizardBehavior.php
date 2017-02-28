@@ -16,8 +16,7 @@ use yii\base\Behavior;
 use yii\base\InvalidConfigException;
 use yii\helpers\Inflector;
 use creditanalytics\formwizard\events\FormWizardEvent;
-use creditanalytics\formwizard\events\CurrentStepEvent;
-use creditanalytics\formwizard\events\NextStepEvent;
+use creditanalytics\formwizard\events\StepEvent;
 
 /**
  * FormWizardBehavior Class
@@ -52,8 +51,9 @@ class FormWizardBehavior extends Behavior
     const EVENT_STEP_EXPIRED       = 'stepExpired';
 
     const DIRECTION_BACKWARD = -1;
-    const DIRECTION_REPEAT   = 0;
     const DIRECTION_FORWARD  = 1;
+
+    const FINAL_STEP = 'finalStep';
 
     const HTTP_STATUS_CODE = 302;
 
@@ -113,10 +113,6 @@ class FormWizardBehavior extends Behavior
      */
     private $_branchKey;
     /**
-     * @var string The session key that indexes the number of step repetitions.
-     */
-    private $_indexRepetitionKey;
-    /**
      * @var array List of steps, in order, that are to be included in the wizard.
      * basic example: ['login_info', 'profile', 'confirm']
      *
@@ -135,11 +131,11 @@ class FormWizardBehavior extends Behavior
      */
     private $_stepsConfig = [];
     /**
-     * @var string The session key that holds data for processed steps.
+     * @var string The session key that holds data for step models.
      */
     private $_modelsKey;
     /**
-     * @var string The session key that holds parsed steps.
+     * @var string The session key that holds data for steps names and labels.
      */
     private $_stepsKey;
     /**
@@ -172,7 +168,6 @@ class FormWizardBehavior extends Behavior
 
         $this->_session            = Yii::$app->getSession();
         $this->_branchKey          = $this->sessionKey.'.branches';
-        $this->_indexRepetitionKey = $this->sessionKey.'.indexRepetition';
         $this->_modelsKey          = $this->sessionKey.'.models';
         $this->_stepsKey           = $this->sessionKey.'.steps';
         $this->_timeoutKey         = $this->sessionKey.'.timeout';
@@ -188,11 +183,10 @@ class FormWizardBehavior extends Behavior
     protected function start()
     {
         if ($this->beforeFormWizard()) {
-            $this->_session[$this->_branchKey]          = new \ArrayObject;
-            $this->_session[$this->_indexRepetitionKey] = 0;
-            $this->_session[$this->_modelsKey]          = new \ArrayObject;
+            $this->_session[$this->_branchKey] = new \ArrayObject;
+            $this->_session[$this->_stepsKey]  = $this->parseSteps();
+            $this->_session[$this->_modelsKey] = new \ArrayObject;
 
-            $this->parseSteps();
             return true;
         }
 
@@ -211,10 +205,12 @@ class FormWizardBehavior extends Behavior
      */
     protected function finish($step)
     {
+        $isCompleted = (true === $step) ? true : false;
         $event = new FormWizardEvent([
             'sender'    => $this,
             'step'      => $step,
-            'models'    => (empty($step) ? null : $this->readModels())
+            'wizardCompleted' => $isCompleted,
+            'models'    => (empty($step) ? null : $this->readStepModels())
         ]);
         $this->owner->trigger(self::EVENT_AFTER_FORM_WIZARD, $event);
 
@@ -256,49 +252,35 @@ class FormWizardBehavior extends Behavior
      */
     public function proccessStep($step = null)
     {
-        // $this->_session[$this->_indexRepetitionKey] = 0;
-        // print_r('count -----> code 260 ');
-        // print_r( count($this->_session[$this->_modelsKey]) );
-
+        $models = $this->_session[$this->_modelsKey];
         if (null === $step) {
             if (!$this->hasStarted() && !$this->start()) {
                 return $this->finish(false);
-            } elseif ($this->hasCompleted()) {
-                return $this->finish(true);
             } else {
-                $this->moveNext();
+                $this->moveNext(null, self::DIRECTION_FORWARD);
             }
+        } elseif (self::FINAL_STEP === $step) {
+            return $this->finish(true);
 
-        // NOTE [[step]] is not valid form wizard step
         } elseif(!$this->isValidStep($step)) {
             $event = new FormWizardEvent(['sender' => $this, 'step' => $step]);
             $this->owner->trigger(self::EVENT_INVALID_STEP, $event);
 
-            if ($event->formWizardContinue) {$this->moveNext();}
+            if ($event->formWizardContinue) {$this->moveNext(null, $event->nextStep);}
 
             $this->resetFormWizard();
             return $event->html;
 
-        // NOTE If [[step]] is a valid step we proccess it
         } elseif($this->isValidStep($step)) {
-            // Raise a processStep event
-            $event = new CurrentStepEvent([
-                'n'      => $this->_session[$this->_indexRepetitionKey],
+            // Raise a Step event
+            $event = new StepEvent([
                 'sender' => $this,
                 'step'   => $step,
-                't'      => (isset($this->_session[$this->_modelsKey][$step])
-                    ? count($this->_session[$this->_modelsKey][$step])
-                    : 0
-                ),
-                'route' => Url::to(array_merge([''], [$this->queryParam => $step])),
+                'model'  => (isset($models[$step])) ? $models[$step] : null,
+                'route'  => Url::to(array_merge([''], [$this->queryParam => $step])),
             ]);
 
-            // For repetiotions
-            $indexRepetition = $this->_session[$this->_indexRepetitionKey];
-            $models          = $this->_session[$this->_modelsKey];
-            $event->model    = (isset($models[$step][$indexRepetition])) ? $models[$step][$indexRepetition] : null;
-
-            // NOTE Init Form Wizard Event for current step and wait
+            // Init Form Wizard Event for current step and wait
             // all handlers have worked ----> curentStepHandler();
             $this->owner->trigger(self::EVENT_CURRENT_STEP, $event);
 
@@ -361,12 +343,6 @@ class FormWizardBehavior extends Behavior
      */
     protected function saveStep($step, $data)
     {
-        // $models = $this->_session[$this->_modelsKey];
-        // if (!isset($models[$step])) {
-            // $this->_session[$this->_modelsKey][$step] = new \ArrayObject;
-        // }
-        // $this->_session[$this->_modelsKey][$step][] = $data;
-
         $this->_session[$this->_modelsKey][$step] = $data;
     }
 
@@ -378,15 +354,10 @@ class FormWizardBehavior extends Behavior
      * @return mixed Data for the specified step; array: data for all steps;
      * null is no data exist for the specified step.
      */
-    public function readStepsModel($step = '')
+    public function readStepModels($step = '')
     {
-        return (empty($step)
-            ? $this->_session[$this->_modelsKey]
-            : (isset($this->_session[$this->_modelsKey][$step])
-                ? $this->_session[$this->_modelsKey][$step]
-                : []
-            )
-        );
+        $models = $this->_session[$this->_modelsKey];
+        return empty($step) ? $models : ( isset($models[$step]) ? $models[$step] : null );
     }
 
     /**
@@ -430,13 +401,8 @@ class FormWizardBehavior extends Behavior
      * Resets the wizard by deleting the wizard session variables.
      */
     public function resetFormWizard() {
-        $sessionKeys = [
-            '_branchKey',
-            '_indexRepetitionKey',
-            '_modelsKey',
-            '_stepsKey',
-            '_timeoutKey'
-        ];
+        $sessionKeys = ['_branchKey', '_modelsKey', '_stepsKey', '_timeoutKey'];
+
         foreach ($sessionKeys as $_key) {
             $this->_session->remove($this->$_key);
         }
@@ -473,16 +439,14 @@ class FormWizardBehavior extends Behavior
      * @param StepEvent $event The current step event. If NULL the wizard goes to
      * the first step
      */
-    protected function moveNext($currentStep = null, $nextStep = null)
+    protected function moveNext($current = null, $nextStep = self::DIRECTION_FORWARD)
     {
-        // print_r('count -----> code 476 ');
-        // print_r($this->_session[$this->_indexRepetitionKey]);
-        // first step, resumed wizard, or continuing after an invalid step
-        if (null === $nextStep) {
-            $steps  = array_keys($this->_session[$this->_stepsKey]);
-            $models = $this->_session[$this->_modelsKey];
-            $this->_session[$this->_indexRepetitionKey] = 0;
-            $nextStep = (count($models) && $this->autoAdvance) ? $this->expectedNextStep($currentStep, self::DIRECTION_FORWARD) : array_shift($steps);
+        $steps  = array_keys($this->_session[$this->_stepsKey]);
+        $models = $this->_session[$this->_modelsKey];
+
+        if (null === $current) {
+            $nextStep = array_shift($steps);
+             // first step, resumed wizard, or continuing after an invalid step
 
         } elseif (is_string($nextStep)) {
             if ($this->autoAdvance) {
@@ -491,70 +455,31 @@ class FormWizardBehavior extends Behavior
             if (!$this->isValidStep($nextStep)) {
                 throw new \yii\base\InvalidConfigException('StepEvent::nextStep must be valid step string');
             }
-            $this->_session[$this->_indexRepetitionKey] = count(
-                $this->_session[$this->_modelsKey][$nextStep]
-            );
-            print_r('count -------> code:488 ');
-            print_r($this->_session[$this->_indexRepetitionKey]);
-
-        } elseif (self::DIRECTION_REPEAT === $nextStep) {
-            $this->_session[$this->_indexRepetitionKey] += 1;
 
         } elseif (self::DIRECTION_BACKWARD === $nextStep) {
-            if ($this->_session[$this->_indexRepetitionKey] > 0) {
-                // there are earlier repeated steps
-                $this->_session[$this->_indexRepetitionKey] -= 1;
-            } else {
-                // go to the previous step
-                $steps = array_keys($this->_session[$this->_stepsKey]);
-                $index = array_search($currentStep, $steps);
-                $previousIndex = ($index === 0) ? 0 : ($index - 1);
-
-                $nextStep = $steps[$previousIndex];
-                $this->_session[$this->_indexRepetitionKey] = count(
-                    $this->_session[$this->_modelsKey][$nextStep]
-                ) - 1;
-
-                print_r('count -------> code:509 ');
-                print_r($this->_session[$this->_indexRepetitionKey]);
-
-            }
+            $nextStep = $this->expectedStep($current, self::DIRECTION_BACKWARD);
 
         } elseif (self::DIRECTION_FORWARD === $nextStep) {
-            if ($this->autoAdvance) {
-                $nextStep = $this->expectedNextStep($currentStep, self::DIRECTION_FORWARD);
-                $this->_session[$this->_indexRepetitionKey] = 0;
-            } else {
-                $stepKeys = $this->_session[$this->_stepsKey];
-                $steps    = array_keys($stepKeys);
-                $models   = $this->_session[$this->_modelsKey];
-                $index    = array_search($nextStep, $steps) + 1;
-                $nextStep = ($index === count($stepKeys)) ? null : $steps[$index];
-                $this->_session[$this->_indexRepetitionKey] = (isset($models[$nextStep])
-                    ? count($models[$nextStep])
-                    : 0
-                );
-                print_r('count -------> code:528 ');
-                print_r($this->_session[$this->_indexRepetitionKey]);
-            }
+            $nextStep = $this->expectedStep($current, self::DIRECTION_FORWARD);
         }
 
         $params = $this->owner->actionParams;
 
-        if (is_null($nextStep)) { // wizard has finished
-            unset($params[$this->queryParam]);
-        } else {
+        // if (self::FINAL_STEP === $nextStep) { // wizard has finished
+            // unset($params[$this->queryParam]);
+        // } else {
             $params[$this->queryParam] = $nextStep;
-        }
+        // }
 
         if ($this->timeout) {
             $this->_session[$this->_timeoutKey] = time() + $this->timeout;
         }
 
-        $event = new NextStepEvent([
+        $event = new StepEvent([
             'sender' => $this,
-            'step' => $nextStep,
-            'route' => Url::to(array_merge([''], $params)),
+            'step'   => $nextStep,
+            'model'  => isset($models[$nextStep]) ? $models[$nextStep] : null,
+            'route'  => Url::to(array_merge([''], $params)),
         ]);
 
         $this->owner->trigger(self::EVENT_NEXT_STEP, $event);
@@ -631,20 +556,6 @@ class FormWizardBehavior extends Behavior
             return false;
         }
 
-        // $steps = array_keys($this->_session[$this->_stepsKey]);
-        // $index = array_search($step, $steps);
-        // $expectedStep = $this->expectedStep(); // NULL if wizard finished
-
-        // if ($index == 0 || ($index >= 0 && ($this->forwardOnly
-        //     ? $expectedStep !== null &&
-        //         $index === array_search($expectedStep, $steps)
-        //     : $expectedStep === null ||
-        //         $index <= array_search($expectedStep, $steps)
-        // )) || $this->hasCompleted()) {
-        //     return true;
-        // }
-        // return false;
-
         return in_array($step, array_keys($this->_session[$this->_stepsKey]));
     }
 
@@ -654,40 +565,28 @@ class FormWizardBehavior extends Behavior
      * @return string|null The first unprocessed step; NULL if all steps have
      * been processed
      */
-    protected function expectedStep()
-    {
-        $steps  = $this->_session[$this->_stepsKey];
-        $models = $this->_session[$this->_modelsKey];
-        foreach (array_keys($steps) as $step) {
-            if (!isset($models[$step])) {
-                return $step;
-            }
-        }
-    }
-
-    /**
-     * Returns the first unprocessed step (i.e. step data not saved in Session).
-     *
-     * @return string|null The first unprocessed step; NULL if all steps have
-     * been processed
-     */
-    protected function expectedNextStep($currentStep, $direction)
+    protected function expectedStep($current, $direction)
     {
         $steps = array_keys($this->_session[$this->_stepsKey]);
-        $index = array_search($currentStep, $steps);
+        $index = array_search($current, $steps);
 
-        $nextStepIndex = (($index + $direction) < 0) ? 0 : ($index + $direction);
-        $nextStepIndex = (($index + $direction + 1) > count($steps) ) ? (count($steps) - 1) : ($index + $direction);
+        if ( ($index + $direction) < 0 ) {
+            $step = array_shift($steps);
+        } elseif ( ($index + $direction) >= count($steps) ) {
+            $step = self::FINAL_STEP;
+        } else {
+            $step = $steps[$index + $direction];
+        }
 
-        return $steps[$nextStepIndex];
+        return $step;
     }
 
-    /**
-     * Parse the steps into a flat array and get their labels
-     */
+    // /**
+    //  * Parse the steps into a flat array and get their labels
+    //  */
     protected function parseSteps()
     {
-        $this->_session[$this->_stepsKey] = $this->_parseSteps($this->_stepsConfig);
+        return $this->_parseSteps($this->_stepsConfig);
     }
 
     /**
@@ -773,7 +672,7 @@ class FormWizardBehavior extends Behavior
         $event = new FormWizardEvent([
             'sender'   => $this,
             'step'     => $step,
-            'stepData' => $this->readStepsModel($step)
+            'stepData' => $this->readStepModel($step)
         ]);
         $this->owner->trigger(self::EVENT_STEP_EXPIRED, $event);
         $this->_session[$this->_modelsKey][$step] = $event->model;
@@ -791,13 +690,7 @@ class FormWizardBehavior extends Behavior
      */
     public function pauseFormWizard()
     {
-        $sessionKeys = [
-            '_branchKey',
-            '_indexKey',
-            '_stepDataKey',
-            '_stepsKey',
-            '_timeoutKey'
-        ];
+        $sessionKeys = ['_branchKey', '_stepDataKey', '_stepsKey', '_timeoutKey'];
         $data = [];
         foreach ($sessionKeys as $_key) {
             $data[$this->$_key] = (isset($this->_session[$this->$_key])
